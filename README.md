@@ -11,7 +11,8 @@ This is the official GitHub repository for [**GraDeT-HTR: A Resource-Efficient B
 **🔗 Resources:**
 - 📄 [Paper](https://arxiv.org/abs/2509.18081)
 - 🌐 [Live Demo](https://cognistorm.ai/hcr)
-- 🎥 [Video Presentation](https://www.youtube.com/watch?v=ckgWBHQarxc)
+- 🛠️ [System Walkthrough](https://www.youtube.com/watch?v=ckgWBHQarxc)
+- 🎥 [Video Presentation](https://youtu.be/mYaGjGujTn0?si=sEcdWJcTrfKJqu77)
 
 ## 📑 Table of Contents
 - [📖 Introduction](#-introduction)
