@@ -991,5 +991,3 @@ Epoch 1/10:
 **Total**: ~490 lines of new/modified code
 
 ---
-
-This implementation enables Bengali HTR to leverage contextual information while maintaining strong visual recognition capabilities, with automatic focus on difficult samples through difficulty-aware weighting.
