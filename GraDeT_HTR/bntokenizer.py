@@ -93,6 +93,8 @@ class BnGraphemizerProcessor:
         if not isinstance(inputs, list):
             return {
                 'input_ids': inputs['input_ids'],
+                # The attention mask helps to ignore the added padding, which is no important to us
+                # in terms of context
                 'attention_mask': inputs['attention_mask']
             } 
             
@@ -132,7 +134,7 @@ class BnGraphemizerProcessor:
     
 
 if __name__ == "__main__":
-    processor = BnGraphemizerProcessor(grapheme_file='bn_grapheme_1296_from_bengali.ai.buet.txt', add_bos_token=True, add_eos_token=True)
+    processor = BnGraphemizerProcessor(grapheme_file='/home/shyan/Desktop/Research/GRAD-HTR/GraDeT-HTR/tokenization/bn_grapheme_1296_from_bengali.ai.buet.txt', add_bos_token=True, add_eos_token=True)
 
     bng_texts = [["শুভ অপরাহ্ন", "পরে দেখা হবে", "শুভ জন্মদিন", "অভিনন্দন"],
                  ["শুভ অপরাহ্ন", "পরে দেখা হবে", "শুভ জন্মদিন", "অভিনন্দন"]]

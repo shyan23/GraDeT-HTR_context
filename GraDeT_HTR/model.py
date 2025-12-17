@@ -5,7 +5,6 @@ from typing import Optional, Tuple, Dict, Any
 from config import DTrOCRConfig
 from processor import DTrOCRProcessor
 from data import DTrOCRLMHeadModelOutput, DTrOCRModelOutput, DTrOCRProcessorOutput
-
 from transformers.models.vit.modeling_vit import ViTPatchEmbeddings
 from transformers.generation.logits_process import LogitsProcessorList
 from transformers.models.gpt2.modeling_gpt2 import GPT2Block, GPT2Model
@@ -24,13 +23,16 @@ from transformers.generation.stopping_criteria import (
 class DTrOCRModel(nn.Module):
     def __init__(self, config: DTrOCRConfig):
         super().__init__()
-        # embeddings
+        # embeddings(nn.conv2d(kernel_size,stride))
         self.patch_embeddings = ViTPatchEmbeddings(config)
         self.token_embedding = nn.Embedding(config.vocab_size, config.hidden_size)
         self.positional_embedding = nn.Embedding(config.max_position_embeddings, config.hidden_size)
 
         self.hidden_layers = nn.ModuleList([GPT2Block(config, layer_idx=i) for i in range(config.num_hidden_layers)])
+
+        # dropout prevents overfitting of the data
         self.dropout = nn.Dropout(config.attn_pdrop)
+        #normalizing the inputs across the features (the hidden dimension) for a single training sample.
         self.layer_norm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_epsilon)
 
         self._attn_implementation = config._attn_implementation
@@ -46,7 +48,17 @@ class DTrOCRModel(nn.Module):
         past_key_values: Optional[Tuple[Tuple[torch.Tensor]]] = None,
         attention_mask: Optional[torch.Tensor] = None,
         use_cache: Optional[bool] = False,
+        context_length: Optional[int] = 0,
     ) -> DTrOCRModelOutput:
+        """
+        Forward pass with support for context tokens before image patches.
+
+        Input sequence from processor: [context_tokens, SEP, target_tokens]
+        This forward reorders to: [context, SEP, IMAGE_PATCHES, BOS, remaining_target]
+
+        Args:
+            context_length: Number of context tokens (including SEP) at start of input_ids
+        """
         device = input_ids.device if input_ids is not None else input_ids.device
         input_ids = input_ids.view(-1, input_ids.shape[-1])
 
@@ -60,10 +72,25 @@ class DTrOCRModel(nn.Module):
         patch_embeddings = self.patch_embeddings(pixel_values) if past_length == 0 else None
         token_embeddings = self.token_embedding(input_ids)
 
-        if patch_embeddings is not None:
+        # Reorder embeddings: [context, SEP, IMAGE, BOS, target]
+        if patch_embeddings is not None and context_length > 0:
+            # Split token embeddings into context and target
+            context_embeddings = token_embeddings[:, :context_length, :]  # [batch, ctx_len, hidden]
+            target_embeddings = token_embeddings[:, context_length:, :]   # [batch, target_len, hidden]
+
+            # Concatenate: [context, SEP] + [IMAGE] + [BOS, target]
+            patch_and_token_embeddings = torch.concat([
+                context_embeddings,
+                patch_embeddings,
+                target_embeddings
+            ], dim=-2)
+        elif patch_embeddings is not None:
+            # No context: [IMAGE] + [BOS, target]
             patch_and_token_embeddings = torch.concat([patch_embeddings, token_embeddings], dim=-2)
         else:
+            # Use cache (past_key_values), no patches
             patch_and_token_embeddings = token_embeddings
+
         input_shape = patch_and_token_embeddings.shape
 
         if position_ids is None or past_length == 0:
@@ -76,19 +103,35 @@ class DTrOCRModel(nn.Module):
         hidden_states = patch_and_token_embeddings + position_embeddings
         hidden_states = self.dropout(hidden_states)
 
-        # attention mask
+        # attention mask: adjust for reordered sequence
         if attention_mask is not None:
-            attention_mask = torch.concat(
-                [
-                    torch.ones(
-                        attention_mask.shape[0],
-                        patch_embeddings.shape[-2] if patch_embeddings is not None else past_length,
-                        dtype=attention_mask.dtype,
-                        device=attention_mask.device
-                    ),
-                    attention_mask
-                ], dim=-1
-            )
+            if context_length > 0 and patch_embeddings is not None:
+                # For context mode: [context_mask, patch_mask, target_mask]
+                # Context mask already in attention_mask[:, :context_length]
+                context_mask = attention_mask[:, :context_length]
+                target_mask = attention_mask[:, context_length:]
+
+                patch_mask = torch.ones(
+                    attention_mask.shape[0],
+                    patch_embeddings.shape[-2],
+                    dtype=attention_mask.dtype,
+                    device=attention_mask.device
+                )
+
+                attention_mask = torch.concat([context_mask, patch_mask, target_mask], dim=-1)
+            else:
+                # No context: [patch_mask, target_mask]
+                attention_mask = torch.concat(
+                    [
+                        torch.ones(
+                            attention_mask.shape[0],
+                            patch_embeddings.shape[-2] if patch_embeddings is not None else past_length,
+                            dtype=attention_mask.dtype,
+                            device=attention_mask.device
+                        ),
+                        attention_mask
+                    ], dim=-1
+                )
             if self._attn_implementation == "flash_attention_2":
                 attention_mask = attention_mask if 0 in attention_mask else None
             else:
@@ -147,52 +190,79 @@ class DTrOCRLMHeadModel(nn.Module):
         attention_mask: Optional[torch.Tensor] = None,
         use_cache: Optional[bool] = False,
         labels: Optional[torch.LongTensor] = None,
+        context_length: Optional[int] = 0,
+        return_per_sample_loss: Optional[bool] = False,
     ) -> DTrOCRLMHeadModelOutput:
+        """
+        Forward pass with support for per-sample loss computation.
+
+        Args:
+            context_length: Number of context tokens (including SEP)
+            return_per_sample_loss: If True, returns per-sample losses for difficulty weighting
+        """
         transformer_output = self.transformer(
             pixel_values=pixel_values,
             input_ids=input_ids,
             past_key_values=past_key_values,
             position_ids=position_ids,
             attention_mask=attention_mask,
-            use_cache=use_cache
+            use_cache=use_cache,
+            context_length=context_length
         )
         logits = self.language_model_head(transformer_output.hidden_states)
 
-        loss, accuracy = None, None
+        loss, accuracy, per_sample_loss = None, None, None
         if labels is not None:
             labels = labels.to(logits.device)
 
+            # Calculate skip positions based on context
+            # Skip: [context, SEP, IMAGE, BOS] for contextual mode
+            # Skip: [IMAGE, BOS] for isolation mode
+            skip_positions = context_length + self.image_embedding_length
+
             # Shift so that tokens < n predict n
-            shift_logits = logits[..., self.image_embedding_length:-1, :].contiguous()
+            shift_logits = logits[..., skip_positions:-1, :].contiguous()
             shift_labels = labels[..., 1:].contiguous()
 
-            loss_fct = nn.CrossEntropyLoss(reduction="none")
-            loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
+            batch_size = shift_logits.size(0)
+            seq_len = shift_logits.size(1)
 
+            # Compute per-token loss
+            loss_fct = nn.CrossEntropyLoss(reduction="none")
+            loss_per_token = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
+
+            # Compute accuracy
             label_matches = shift_labels.view(-1) == torch.argmax(
                 torch.nn.functional.softmax(shift_logits.view(-1, shift_logits.size(-1)), dim=-1), dim=-1
             )
 
-            # print("True labels: ", shift_labels.view(-1))
-            # print("Predicted labels: ", torch.argmax(
-            #     torch.nn.functional.softmax(shift_logits.view(-1, shift_logits.size(-1)), dim=-1), dim=-1
-            # ))
+            # Reshape for per-sample computation
+            loss_2d = loss_per_token.view(batch_size, seq_len)
+            matches_2d = label_matches.view(batch_size, seq_len)
 
-            # reduce loss
+            # Apply attention mask
             if attention_mask is not None:
-                mask = attention_mask[..., 1:].reshape(-1)
+                # Mask corresponds to positions after skip
+                mask = attention_mask[..., 1:].reshape(batch_size, seq_len)
 
-                loss = (mask * loss).sum() / mask.sum()
-                accuracy = (mask * label_matches).sum() / mask.sum()
+                # Per-sample loss
+                per_sample_loss = (mask * loss_2d).sum(dim=1) / mask.sum(dim=1)
+
+                # Batch metrics
+                loss = per_sample_loss.mean()
+                accuracy = (mask * matches_2d.float()).sum() / mask.sum()
             else:
-                loss = loss.mean()
-                accuracy = torch.sum(label_matches) / label_matches.shape[0]
+                # No masking
+                per_sample_loss = loss_2d.mean(dim=1)
+                loss = per_sample_loss.mean()
+                accuracy = matches_2d.float().mean()
 
         return DTrOCRLMHeadModelOutput(
             loss=loss,
             logits=logits,
             accuracy=accuracy,
-            past_key_values=transformer_output.past_key_values
+            past_key_values=transformer_output.past_key_values,
+            per_sample_loss=per_sample_loss if return_per_sample_loss else None
         )
 
     @torch.no_grad()

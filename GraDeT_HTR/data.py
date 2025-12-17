@@ -17,6 +17,7 @@ class DTrOCRLMHeadModelOutput:
     loss: Optional[torch.FloatTensor] = None
     accuracy: Optional[torch.FloatTensor] = None
     past_key_values: Optional[torch.FloatTensor] = None
+    per_sample_loss: Optional[torch.FloatTensor] = None  # For difficulty weighting
 
 
 @dataclass
@@ -25,3 +26,4 @@ class DTrOCRProcessorOutput:
     input_ids: Optional[Union[torch.LongTensor, np.ndarray, List[int]]] = None
     attention_mask: Optional[Union[torch.FloatTensor, np.ndarray, List[int]]] = None
     labels: Optional[Union[torch.LongTensor, np.ndarray, List[int]]] = None
+    context_length: Optional[int] = None  # Number of context tokens (including SEP)
