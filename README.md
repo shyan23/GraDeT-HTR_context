@@ -1,6 +1,6 @@
 # GraDeT-HTR: A Resource-Efficient Bengali Handwritten Text Recognition System utilizing Grapheme-based Tokenizer and Decoder-only Transformer
 
-[![Paper](https://img.shields.io/badge/Paper-arXiv-red)](https://arxiv.org/abs/2509.18081) [![Website](https://img.shields.io/badge/Website-Demo-blue)](https://cognistorm.ai/hcr) [![Video](https://img.shields.io/badge/Video-YouTube-red)](https://www.youtube.com/watch?v=ckgWBHQarxc) [![EMNLP 2025](https://img.shields.io/badge/EMNLP-2025-green)](https://2025.emnlp.org/)
+[![Paper](https://img.shields.io/badge/Paper-arXiv-red)](https://arxiv.org/abs/2509.18081) [![Website](https://img.shields.io/badge/Website-Demo-blue)](https://cognistorm.ai/hcr) [![Video](https://img.shields.io/badge/Video-YouTube-red)](https://www.youtube.com/watch?v=ckgWBHQarxc) [![EMNLP 2025](https://img.shields.io/badge/EMNLP-2025-green)](https://aclanthology.org/2025.emnlp-demos.52/)
 
 ## 📖 Introduction
 
@@ -11,7 +11,8 @@ This is the official GitHub repository for [**GraDeT-HTR: A Resource-Efficient B
 **🔗 Resources:**
 - 📄 [Paper](https://arxiv.org/abs/2509.18081)
 - 🌐 [Live Demo](https://cognistorm.ai/hcr)
-- 🎥 [Video Presentation](https://www.youtube.com/watch?v=ckgWBHQarxc)
+- 🛠️ [System Walkthrough](https://www.youtube.com/watch?v=ckgWBHQarxc)
+- 🎥 [Video Presentation](https://youtu.be/mYaGjGujTn0?si=sEcdWJcTrfKJqu77)
 
 ## 📑 Table of Contents
 - [📖 Introduction](#-introduction)
@@ -124,16 +125,16 @@ Access will be granted upon review of your request.
 
 If you use GraDeT-HTR in your research, please cite our paper:
 
-**ArXiv Preprint:**
 ```bibtex
-@misc{hasan2025gradet,
-  title={GraDeT-HTR: A Resource-Efficient Bengali Handwritten Text Recognition System utilizing Grapheme-based Tokenizer and Decoder-only Transformer},
-  author={Hasan, Md. Mahmudul and Choudhury, Ahmed Nesar Tahsin and Hasan, Mahmudul and Khan, Md. Mosaddek},
-  year={2025},
-  eprint={2509.18081},
-  archivePrefix={arXiv},
-  primaryClass={cs.CV},
-  url={https://arxiv.org/abs/2509.18081}
+@inproceedings{hasan-etal-2025-gradet,
+  title     = {GraDeT-HTR: A Resource-Efficient Bengali Handwritten Text Recognition System Utilizing Grapheme-based Tokenizer and Decoder-only Transformer},
+  author    = {Hasan, Md. Mahmudul and Choudhury, Ahmed Nesar Tahsin and Hasan, Mahmudul and Khan, Md Mosaddek},
+  booktitle = {Proceedings of the 2025 Conference on Empirical Methods in Natural Language Processing: System Demonstrations},
+  year      = {2025},
+  pages     = {696--706},
+  publisher = {Association for Computational Linguistics},
+  url       = {https://aclanthology.org/2025.emnlp-demos.52/},
+  doi       = {10.18653/v1/2025.emnlp-demos.52}
 }
 ```
 
