@@ -38,6 +38,7 @@ class DTrOCRProcessor:
         Optionally adds BOS/EOS
         Ensures text length fits in the decoder
         """
+        self.max_context_length = getattr(config, 'max_context_length', 20)
         self.tokeniser = BnGraphemizerProcessor(
             config.bn_vocab_file,
             add_bos_token=add_bos_token,
@@ -75,14 +76,15 @@ class DTrOCRProcessor:
             texts, padding=padding
         ) if texts is not None else None
 
-        # If context is provided, prepend it with separator
+        # If context is provided, prepend it with separator and pad to fixed length
         if context_text is not None and context_text != "" and text_inputs is not None:
-            # Tokenize context
+            # Tokenize context (no padding — we pad to fixed length ourselves)
             context_inputs = self.tokeniser(
                 context_text, padding=False
             )
 
             sep_token_id = self.tokeniser.eos_token_id  # Reuse EOS as separator
+            pad_token_id = self.tokeniser.pad_token_id
             context_ids = context_inputs['input_ids']
 
             # Handle list/tensor conversion
@@ -94,9 +96,20 @@ class DTrOCRProcessor:
                 if isinstance(context_ids[0], list):
                     context_ids = context_ids[0]
 
+            # Truncate context to leave room for SEP within max_context_length
+            context_ids = context_ids[:self.max_context_length - 1]
+
             # Create context with separator: [context_tokens] + [SEP]
             context_with_sep = context_ids + [sep_token_id]
-            context_length = len(context_with_sep)
+
+            # Pad to fixed max_context_length so all samples have identical shape
+            actual_len = len(context_with_sep)
+            pad_needed = self.max_context_length - actual_len
+            context_padded = context_with_sep + [pad_token_id] * pad_needed
+            context_attn_mask = [1] * actual_len + [0] * pad_needed
+
+            # Fixed context_length for ALL samples (enables uniform batching)
+            context_length = self.max_context_length
 
             # Get target tokens
             target_ids = text_inputs['input_ids']
@@ -107,12 +120,11 @@ class DTrOCRProcessor:
             elif isinstance(target_ids, list) and len(target_ids) > 0 and isinstance(target_ids[0], list):
                 target_ids = target_ids[0]
 
-            # Concatenate: [context, SEP] + [target_tokens]
-            combined_ids = context_with_sep + target_ids
+            # Concatenate: [context_padded] + [target_tokens]
+            combined_ids = context_padded + target_ids
             text_inputs['input_ids'] = torch.tensor([combined_ids])
 
             # Update attention mask
-            context_mask = [1] * context_length
             target_mask = text_inputs['attention_mask']
             if hasattr(target_mask, 'tolist'):
                 target_mask = target_mask.tolist()
@@ -121,7 +133,7 @@ class DTrOCRProcessor:
             elif isinstance(target_mask, list) and len(target_mask) > 0 and isinstance(target_mask[0], list):
                 target_mask = target_mask[0]
 
-            combined_mask = context_mask + target_mask
+            combined_mask = context_attn_mask + target_mask
             text_inputs['attention_mask'] = torch.tensor([combined_mask])
 
         # Process images

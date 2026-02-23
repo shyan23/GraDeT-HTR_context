@@ -221,8 +221,10 @@ class DTrOCRLMHeadModel(nn.Module):
             skip_positions = context_length + self.image_embedding_length
 
             # Shift so that tokens < n predict n
+            # shift_logits: skip context+image positions, predict target tokens
+            # shift_labels: skip context tokens + BOS, align with shifted logits
             shift_logits = logits[..., skip_positions:-1, :].contiguous()
-            shift_labels = labels[..., 1:].contiguous()
+            shift_labels = labels[..., context_length + 1:].contiguous()
 
             batch_size = shift_logits.size(0)
             seq_len = shift_logits.size(1)
@@ -242,8 +244,8 @@ class DTrOCRLMHeadModel(nn.Module):
 
             # Apply attention mask
             if attention_mask is not None:
-                # Mask corresponds to positions after skip
-                mask = attention_mask[..., 1:].reshape(batch_size, seq_len)
+                # Mask corresponds to target positions (skip context + BOS)
+                mask = attention_mask[..., context_length + 1:].reshape(batch_size, seq_len)
 
                 # Per-sample loss
                 per_sample_loss = (mask * loss_2d).sum(dim=1) / mask.sum(dim=1)

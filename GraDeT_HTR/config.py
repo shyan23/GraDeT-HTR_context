@@ -19,7 +19,8 @@ class DTrOCRConfig:
         attn_pdrop: Optional[float] = 0.1,
         layer_norm_epsilon: Optional[float] = 1e-5,
         attn_implementation: Literal['sdpa', 'flash_attention_2'] = 'sdpa',
-        bn_vocab_file: str = '../tokenization/bn_grapheme_1296_from_bengali.ai.buet.txt'
+        bn_vocab_file: str = '../tokenization/bn_grapheme_1296_from_bengali.ai.buet.txt',
+        max_context_length: Optional[int] = 20,
     ):
         self.gpt2_hf_model = gpt2_hf_model
         self.vit_hf_model = vit_hf_model
@@ -30,6 +31,7 @@ class DTrOCRConfig:
         self.image_size = image_size
         self.num_channels = num_channels
         self.vocab_size = vocab_size
+        self.max_context_length = max_context_length
         self.max_position_embeddings = max_position_embeddings
         self.resid_pdrop = resid_pdrop
         self.embd_pdrop = embd_pdrop

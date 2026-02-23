@@ -17,6 +17,8 @@ parser.add_argument('--json_dir', type=str, default="../out/single_words/json", 
 parser.add_argument('--batch_size', type=int, default=32, help='Batch size')
 parser.add_argument('--epochs', type=int, default=10, help='Number of epochs')
 parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate')
+parser.add_argument('--margin_lambda', type=float, default=0.5,
+                    help='Lambda for margin loss term (context vs isolation)')
 args = parser.parse_args()
 
 config = DTrOCRConfig()
@@ -57,6 +59,48 @@ use_amp = True
 scaler = torch.amp.GradScaler(device=device, enabled=use_amp)
 optimizer = torch.optim.Adam(params=model.parameters(), lr=args.lr)
 
+
+# --- Bug 3 fix: evaluate_context_model defined BEFORE the training loop ---
+def evaluate_context_model(model, dataloader, device, use_amp=True):
+    """Evaluate model with context-aware dual-path loss."""
+    model.eval()
+    val_losses, val_ctx_losses, val_iso_losses = [], [], []
+    val_accs = []
+
+    with torch.no_grad():
+        for inputs in dataloader:
+            pixel_values = inputs['pixel_values'].to(device)
+            labels = inputs['labels'].to(device)
+
+            # Contextual
+            input_ids_ctx = inputs['input_ids'].to(device)
+            attention_mask_ctx = inputs['attention_mask'].to(device)
+            context_length = inputs['context_length'][0].item() if isinstance(inputs['context_length'], torch.Tensor) else inputs['context_length']
+
+            # Isolation
+            input_ids_iso = inputs['input_ids_isolated'].to(device)
+            attention_mask_iso = inputs['attention_mask_isolated'].to(device)
+            labels_iso = inputs['labels_isolated'].to(device)
+            context_length_iso = inputs['context_length_isolated'][0].item() if isinstance(inputs['context_length_isolated'], torch.Tensor) else inputs['context_length_isolated']
+
+            with torch.autocast(device_type=device, dtype=torch.float16, enabled=use_amp):
+                outputs_ctx = model(pixel_values=pixel_values, input_ids=input_ids_ctx,
+                                   attention_mask=attention_mask_ctx, labels=labels,
+                                   context_length=context_length)
+                outputs_iso = model(pixel_values=pixel_values, input_ids=input_ids_iso,
+                                   attention_mask=attention_mask_iso, labels=labels_iso,
+                                   context_length=context_length_iso)
+
+            loss_net = outputs_ctx.loss + outputs_iso.loss
+            val_losses.append(loss_net.item())
+            val_ctx_losses.append(outputs_ctx.loss.item())
+            val_iso_losses.append(outputs_iso.loss.item())
+            val_accs.append((outputs_ctx.accuracy.item() + outputs_iso.accuracy.item()) / 2)
+
+    return (sum(val_losses)/len(val_losses), sum(val_accs)/len(val_accs),
+            sum(val_ctx_losses)/len(val_ctx_losses), sum(val_iso_losses)/len(val_iso_losses))
+
+
 # Training
 EPOCHS = args.epochs
 train_losses, train_accuracies = [], []
@@ -64,12 +108,13 @@ validation_losses, validation_accuracies = [], []
 
 if args.context:
     print("\n=== Training with Context-Aware Dual-Path Loss ===")
-    print("L_net = L_ctx + L_iso with difficulty-aware weighting\n")
+    print(f"L = -log(Pc) - log(Pi) + {args.margin_lambda}*max(0, loss_ctx - loss_iso)\n")
 
 for epoch in range(EPOCHS):
     epoch_losses, epoch_accuracies = [], []
     epoch_ctx_losses, epoch_iso_losses = [], []
     epoch_ctx_accs, epoch_iso_accs = [], []
+    epoch_margin_terms = []
 
     model.train()
     for inputs in tqdm.tqdm(train_dataloader, total=len(train_dataloader), desc=f'Epoch {epoch + 1}'):
@@ -80,7 +125,7 @@ for epoch in range(EPOCHS):
         labels = inputs['labels'].to(device)
 
         if args.context:
-            # === DUAL-PATH LOSS WITH DIFFICULTY WEIGHTING ===
+            # === DUAL-PATH LOSS WITH MARGIN TERM ===
 
             # Contextual inputs
             input_ids_ctx = inputs['input_ids'].to(device)
@@ -121,18 +166,17 @@ for epoch in range(EPOCHS):
                 per_sample_loss_iso = outputs_iso.per_sample_loss
                 acc_iso = outputs_iso.accuracy
 
-            # Compute difficulty weights from isolation loss
-            batch_size = per_sample_loss_iso.size(0)
-            weights = (per_sample_loss_iso / per_sample_loss_iso.sum()) * batch_size
+            # --- Bug 4 fix: Correct loss formula ---
+            # L = -log(Pc) - log(Pi) + lambda * max(0, loss_ctx - loss_iso)
+            # Terms 1+2: base cross-entropy from both paths
+            combined_base_loss = per_sample_loss_ctx + per_sample_loss_iso
 
-            # Clamp weights to prevent instability
-            weights = torch.clamp(weights, min=0.1, max=10.0)
+            # Term 3: margin penalty -- fires when context is WORSE than isolation
+            margin_term = args.margin_lambda * torch.clamp(
+                per_sample_loss_ctx - per_sample_loss_iso, min=0.0
+            )
 
-            # Combined per-sample loss
-            combined_per_sample_loss = per_sample_loss_ctx + per_sample_loss_iso
-
-            # Apply difficulty weighting
-            weighted_loss = (weights * combined_per_sample_loss).mean()
+            weighted_loss = (combined_base_loss + margin_term).mean()
 
             # Backward pass
             scaler.scale(weighted_loss).backward()
@@ -146,6 +190,7 @@ for epoch in range(EPOCHS):
             epoch_ctx_accs.append(acc_ctx.item())
             epoch_iso_accs.append(acc_iso.item())
             epoch_accuracies.append((acc_ctx.item() + acc_iso.item()) / 2)
+            epoch_margin_terms.append(margin_term.mean().item())
 
         else:
             # === STANDARD TRAINING (NO CONTEXT) ===
@@ -177,10 +222,12 @@ for epoch in range(EPOCHS):
         validation_losses.append(val_loss)
         validation_accuracies.append(val_acc)
 
+        avg_margin = sum(epoch_margin_terms) / len(epoch_margin_terms) if epoch_margin_terms else 0.0
         print(f"\nEpoch {epoch + 1}/{EPOCHS}:")
         print(f"  Train - Loss: {train_losses[-1]:.4f} | Acc: {train_accuracies[-1]:.4f}")
         print(f"    Ctx Loss: {sum(epoch_ctx_losses)/len(epoch_ctx_losses):.4f} | Iso Loss: {sum(epoch_iso_losses)/len(epoch_iso_losses):.4f}")
         print(f"    Ctx Acc: {sum(epoch_ctx_accs)/len(epoch_ctx_accs):.4f} | Iso Acc: {sum(epoch_iso_accs)/len(epoch_iso_accs):.4f}")
+        print(f"    Margin Mean: {avg_margin:.4f}")
         print(f"  Val   - Loss: {val_loss:.4f} | Acc: {val_acc:.4f}")
         print(f"    Ctx Loss: {val_ctx_loss:.4f} | Iso Loss: {val_iso_loss:.4f}")
     else:
@@ -190,50 +237,15 @@ for epoch in range(EPOCHS):
 
         print(f"Epoch: {epoch + 1} - Train loss: {train_losses[-1]:.4f}, Train accuracy: {train_accuracies[-1]:.4f}, Validation loss: {validation_losses[-1]:.4f}, Validation accuracy: {validation_accuracies[-1]:.4f}")
 
-    # Save checkpoint
-    save_checkpoint(model, optimizer, epoch + 1, train_losses[-1], validation_losses[-1],
-                   f'checkpoint_{"context_" if args.context else ""}epoch_{epoch+1}.pt')
+    # --- Bug 6 fix: save_checkpoint with correct arguments ---
+    save_checkpoint(
+        model, optimizer, epoch + 1,
+        train_losses[-1], validation_losses[-1],
+        train_accuracies[-1], validation_accuracies[-1],
+        './',
+        f'checkpoint_{"context_" if args.context else ""}epoch_{epoch+1}.pt'
+    )
 
 # Save final model
 save_final_model(model, f'final_{"context_" if args.context else ""}model.pth')
 print("\nTraining complete!")
-
-
-def evaluate_context_model(model, dataloader, device, use_amp=True):
-    """Evaluate model with context-aware dual-path loss."""
-    model.eval()
-    val_losses, val_ctx_losses, val_iso_losses = [], [], []
-    val_accs = []
-
-    with torch.no_grad():
-        for inputs in dataloader:
-            pixel_values = inputs['pixel_values'].to(device)
-            labels = inputs['labels'].to(device)
-
-            # Contextual
-            input_ids_ctx = inputs['input_ids'].to(device)
-            attention_mask_ctx = inputs['attention_mask'].to(device)
-            context_length = inputs['context_length'][0].item() if isinstance(inputs['context_length'], torch.Tensor) else inputs['context_length']
-
-            # Isolation
-            input_ids_iso = inputs['input_ids_isolated'].to(device)
-            attention_mask_iso = inputs['attention_mask_isolated'].to(device)
-            labels_iso = inputs['labels_isolated'].to(device)
-            context_length_iso = inputs['context_length_isolated'][0].item() if isinstance(inputs['context_length_isolated'], torch.Tensor) else inputs['context_length_isolated']
-
-            with torch.autocast(device_type=device, dtype=torch.float16, enabled=use_amp):
-                outputs_ctx = model(pixel_values=pixel_values, input_ids=input_ids_ctx,
-                                   attention_mask=attention_mask_ctx, labels=labels,
-                                   context_length=context_length)
-                outputs_iso = model(pixel_values=pixel_values, input_ids=input_ids_iso,
-                                   attention_mask=attention_mask_iso, labels=labels_iso,
-                                   context_length=context_length_iso)
-
-            loss_net = outputs_ctx.loss + outputs_iso.loss
-            val_losses.append(loss_net.item())
-            val_ctx_losses.append(outputs_ctx.loss.item())
-            val_iso_losses.append(outputs_iso.loss.item())
-            val_accs.append((outputs_ctx.accuracy.item() + outputs_iso.accuracy.item()) / 2)
-
-    return (sum(val_losses)/len(val_losses), sum(val_accs)/len(val_accs),
-            sum(val_ctx_losses)/len(val_ctx_losses), sum(val_iso_losses)/len(val_iso_losses))
