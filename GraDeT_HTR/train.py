@@ -34,8 +34,11 @@ else:
 print(f"Train size: {len(train_dataset)}")
 print(f"Test size: {len(validation_dataset)}")
 
-train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=0)
-validation_dataloader = DataLoader(validation_dataset, batch_size=args.batch_size, shuffle=False, num_workers=0)
+num_workers = min(mp.cpu_count(), 4)
+train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True,
+                              num_workers=num_workers, pin_memory=True, prefetch_factor=2)
+validation_dataloader = DataLoader(validation_dataset, batch_size=args.batch_size, shuffle=False,
+                                   num_workers=num_workers, pin_memory=True, prefetch_factor=2)
 
 # attempt to autodetect the device
 device = 'cpu'
