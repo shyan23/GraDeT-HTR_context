@@ -99,29 +99,36 @@ class ContextAwareDataset(Dataset):
         text = str(row['text'])
         prev_text = str(row['prev_text'])
 
-        # Process current word with context
+        # Process image ONCE — pixel_values are identical for both paths
+        pixel_values = self.processor.vit_processor(
+            image, input_data_format='channels_last', return_tensors="pt"
+        )["pixel_values"][0]
+
+        # Tokenize with context (contextual path) — text only, no image
         inputs_with_context = self.processor(
-            images=image,
+            images=None,
             texts=text,
-            context_text=prev_text,  # Previous word as context
+            context_text=prev_text,
             padding=True,
             return_tensors="pt",
             return_labels=True,
         )
 
-        # Process current word without context (for isolation mode)
+        # Tokenize without context (isolation path) — text only, no image
         inputs_without_context = self.processor(
-            images=image,
+            images=None,
             texts=text,
-            context_text="",  # No context
+            context_text="",
             padding=True,
             return_tensors="pt",
             return_labels=True,
         )
 
         return {
+            # Shared image (processed once)
+            'pixel_values': pixel_values,
+
             # Contextual mode inputs
-            'pixel_values': inputs_with_context.pixel_values[0],
             'input_ids': inputs_with_context.input_ids[0],
             'attention_mask': inputs_with_context.attention_mask[0],
             'labels': inputs_with_context.labels[0],
