@@ -8,6 +8,8 @@ from data import DTrOCRLMHeadModelOutput, DTrOCRModelOutput, DTrOCRProcessorOutp
 from transformers.models.vit.modeling_vit import ViTPatchEmbeddings
 from transformers.generation.logits_process import LogitsProcessorList
 from transformers.models.gpt2.modeling_gpt2 import GPT2Block, GPT2Model
+from rope import RotaryEmbedding
+from rope_attention import RoPEBlock
 from transformers.generation.configuration_utils import GenerationConfig
 from transformers.modeling_attn_mask_utils import _prepare_4d_causal_attention_mask_for_sdpa
 from transformers.generation.beam_search import BeamScorer, BeamSearchScorer
@@ -23,12 +25,28 @@ from transformers.generation.stopping_criteria import (
 class DTrOCRModel(nn.Module):
     def __init__(self, config: DTrOCRConfig):
         super().__init__()
+        self.use_rope = getattr(config, 'use_rope', False)
+
         # embeddings(nn.conv2d(kernel_size,stride))
         self.patch_embeddings = ViTPatchEmbeddings(config)
         self.token_embedding = nn.Embedding(config.vocab_size, config.hidden_size)
-        self.positional_embedding = nn.Embedding(config.max_position_embeddings, config.hidden_size)
 
-        self.hidden_layers = nn.ModuleList([GPT2Block(config, layer_idx=i) for i in range(config.num_hidden_layers)])
+        # Positional encoding: RoPE (applied inside attention) or absolute (additive)
+        if self.use_rope:
+            head_dim = config.hidden_size // config.num_attention_heads
+            self.rotary_emb = RotaryEmbedding(
+                dim=head_dim,
+                max_position_embeddings=config.max_position_embeddings,
+                base=getattr(config, 'rope_theta', 10000.0),
+            )
+            self.hidden_layers = nn.ModuleList([
+                RoPEBlock(config, layer_idx=i) for i in range(config.num_hidden_layers)
+            ])
+        else:
+            self.positional_embedding = nn.Embedding(config.max_position_embeddings, config.hidden_size)
+            self.hidden_layers = nn.ModuleList([
+                GPT2Block(config, layer_idx=i) for i in range(config.num_hidden_layers)
+            ])
 
         # dropout prevents overfitting of the data
         self.dropout = nn.Dropout(config.attn_pdrop)
@@ -98,9 +116,16 @@ class DTrOCRModel(nn.Module):
             position_ids = position_ids.unsqueeze(0)
         else:
             position_ids = torch.ones_like(position_ids, device=position_ids.device) * past_length
-        position_embeddings = self.positional_embedding(position_ids)
 
-        hidden_states = patch_and_token_embeddings + position_embeddings
+        if self.use_rope:
+            # RoPE: compute cos/sin for current positions, no additive embedding
+            cos, sin = self.rotary_emb(patch_and_token_embeddings, position_ids)
+            hidden_states = patch_and_token_embeddings
+        else:
+            # Absolute positional embeddings (original behavior)
+            position_embeddings = self.positional_embedding(position_ids)
+            hidden_states = patch_and_token_embeddings + position_embeddings
+
         hidden_states = self.dropout(hidden_states)
 
         # attention mask: adjust for reordered sequence
@@ -144,12 +169,22 @@ class DTrOCRModel(nn.Module):
 
         presents = () if use_cache else None
         for hidden_layer, layer_past in zip(self.hidden_layers, past_key_values):
-            outputs = hidden_layer(
-                hidden_states,
-                layer_past=layer_past,
-                attention_mask=attention_mask,
-                use_cache=use_cache
-            )
+            if self.use_rope:
+                outputs = hidden_layer(
+                    hidden_states,
+                    cos=cos,
+                    sin=sin,
+                    layer_past=layer_past,
+                    attention_mask=attention_mask,
+                    use_cache=use_cache
+                )
+            else:
+                outputs = hidden_layer(
+                    hidden_states,
+                    layer_past=layer_past,
+                    attention_mask=attention_mask,
+                    use_cache=use_cache
+                )
             hidden_states = outputs[0]
             if use_cache is True:
                 presents = presents + (outputs[1],)

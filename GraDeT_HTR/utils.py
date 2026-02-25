@@ -93,8 +93,8 @@ def load_checkpoint(checkpoint_path, model, optimizer, strict=False):
 
 
 # Load the final model (on CPU)
-def load_final_model(model, final_model_path):
+def load_final_model(model, final_model_path, strict=True):
     state_dict = torch.load(final_model_path, map_location=torch.device("cpu"))
     new_state_dict = {k.replace("_orig_mod.", "") if k.startswith("_orig_mod.") else k: v for k, v in state_dict.items()}
-    model.load_state_dict(new_state_dict)
+    model.load_state_dict(new_state_dict, strict=strict)
     return model
