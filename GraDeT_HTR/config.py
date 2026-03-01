@@ -21,6 +21,7 @@ class DTrOCRConfig:
         attn_implementation: Literal['sdpa', 'flash_attention_2'] = 'sdpa',
         bn_vocab_file: str = '../tokenization/bn_grapheme_1296_from_bengali.ai.buet.txt',
         max_context_length: Optional[int] = 20,
+        use_rope: bool = False,
     ):
         self.gpt2_hf_model = gpt2_hf_model
         self.vit_hf_model = vit_hf_model
@@ -39,6 +40,7 @@ class DTrOCRConfig:
         self.layer_norm_epsilon = layer_norm_epsilon
         self._attn_implementation = attn_implementation
         self.bn_vocab_file = bn_vocab_file
+        self.use_rope = use_rope
 
         # other GPT2 config values
         self.n_inner = None
